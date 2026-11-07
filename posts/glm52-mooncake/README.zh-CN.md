@@ -104,6 +104,48 @@ ATOM 的做法是先在 Prefill GPU 上把发往每张 Decode GPU 的 KV 聚合�
 
 **到哪里为止。** 96 个会话以内，首 token 时延的中位数不超过 2.5 秒。到 112 个会话，单卡吞吐仍保持在约 44K，但服务器已没有余量：Decode 的 KV 显存占用中位数达到 **91%**，请求开始在 Prefill 前排队，首 token 时延的中位数升到约 7 秒。
 
+<!-- neurospark-section:start -->
+## 扩展到四台服务器：GLM-5.3 在 MI350X 上的 6P2D 部署（NeuroSpark）
+
+NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验：一组是和上文相同的 AgentX 测试，另一组是在我们的生产负载下比较分池和混池。
+
+**部署形态。** 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Prefill 实例用 TP4；每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。这里的 Prefill 用的是张量并行而不是流水线并行，所以每个 Prefill rank 都持有完整的 MLA KV，Store 里每个 token 存 4 份（约 195 KB，而不是 48.7 KB）。没有开启多 token 预测。
+
+**KV 池。** 每块网卡都已经承担引擎的流量，所以 Store 与引擎共用网卡。我们按 RoCE rail 分池（4 个 Mooncake Master），每个 Prefill 实例的同号 rank 读写同一个池。包括 Decode 所在的服务器在内，每台服务器提供 8 个 96 GiB 的 Store 服务：每台 768 GiB，合计约 3 TiB，按每个 token 存 4 份计算约能容纳 1,690 万 token。
+
+### 32 卡上的 AgentX
+
+<center><img src="./images/glm53-6p2d-agentx-results.zh.png" alt="四台 MI350X 服务器在 56 到 112 个并发会话下的系统总吞吐、prompt token 来源和平均首 token 时延" style="width:100%; max-width:1100px"/></center>
+
+<center><p>图 7：56 到 112 个并发会话下的系统总吞吐（全部 32 张卡）、每个 prompt token 的来源和平均首 token 时延。</p></center>
+
+我们使用与上文相同的工具和 trace（InferenceX AgentX，`cc-traces-weka-062126`），每个负载点测 25 分钟。峰值上下文超过我们 917,504 token 输入上限的 trace 被跳过（393 条中的 10 条），输出长度固定为 trace 记录的长度。我们报告整个系统的吞吐：所有 prompt token（不论是否命中缓存）与生成 token 之和，按全部 32 张卡每秒计。
+
+| 并发会话数 | 系统总吞吐（tokens/s） | prompt token：显存 / Store / 实际计算 | 总复用率 | 平均首 token 时延 |
+|---|---|---|---|---|
+| 56 | 226K | 36% / 59% / 5% | 95% | 1.7 s |
+| 72 | 181K | 27% / 60% / 13% | 87% | 8.5 s |
+| 96 | 待测 | 待测 / 待测 / 待测 | 待测 | 待测 |
+| 112 | 待测 | 待测 / 待测 / 待测 | 待测 | 待测 |
+
+**吞吐与复用。** 56 个会话时，系统在 32 张卡上的总吞吐约 **226K tokens/s**，**95%** 的 prompt token 来自复用（trace 理论上限 97%）：Prefill 显存提供 36%，Mooncake Store 提供 **59%**。72 个会话时，Store 仍提供 60%，但总复用率降到 87%，吞吐降到 181K tokens/s。瓶颈转到 Prefill：请求在 Prefill 前排队，平均首 token 时延从 1.7 秒升到 8.5 秒，而 Decode 的 KV 显存占用始终低于 40%。由于每个 token 在池里存 4 份，同样的内存能留住的会话历史比流水线并行的 Prefill 少。_[96 和 112 个会话：待测。]_
+
+### 生产负载下的分池与混池
+
+<center><img src="./images/glm53-1rps-split-vs-shared.zh.png" alt="每秒 1 个请求时分池与混池的首 token 时延和 prompt token 来源" style="width:100%; max-width:1000px"/></center>
+
+<center><p>图 8：每秒 1 个请求时，分池与混池的首 token 时延和每个 prompt token 的来源。</p></center>
+
+我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 1 个请求回放由生产流量重建的编程 Agent 会话，每组测 20 分钟。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例，相当于挂在 Prefill 上的 CPU 缓存；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。
+
+| 池 | 首 token 时延 p50 / p90 | prompt token：显存 / Store / 实际计算 | 总复用率 |
+|---|---|---|---|
+| 分池（每台独立） | 待测 / 待测 | 待测 / 待测 / 待测 | 待测 |
+| 混池（4 台共享） | 待测 / 待测 | 待测 / 待测 / 待测 | 待测 |
+
+_[结果待测。]_
+<!-- neurospark-section:end -->
+
 ## 下一步
 
 借助 Mooncake，ATOM 已经能在一台服务器上留住 Agent 的历史，但仍有继续推进的空间。
