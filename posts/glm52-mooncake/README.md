@@ -107,7 +107,7 @@ We ran InferenceX AgentX against this deployment for an hour at each load, from 
 <!-- neurospark-section:start -->
 ## Scaling Out: GLM-5.3 on Four MI350X Servers (NeuroSpark)
 
-NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments: a split pool against a shared pool on replayed production traffic, and the same AgentX sweep as above, with the same prefill and decode parallelism.
+NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments, each comparing a split pool with a shared pool: one on replayed production traffic, and one with the same AgentX sweep as above, with the same prefill and decode parallelism.
 
 **The deployment.** The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. For the AgentX sweep, each prefill instance runs PP4, as in the single-server setup, so the Store keeps one copy of every token. The production-traffic comparison ran on our deployed recipe, whose prefill instances run TP4: at production load, TP4 prefill is not the bottleneck, and both pool arms use it, so the comparison isolates pooling.
 
@@ -125,13 +125,15 @@ Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed codin
 
 ### AgentX on 32 GPUs
 
-<center><img src="./images/glm53-6p2d-agentx-results.png" alt="System throughput, time to first token (p50 and p90), and where each prompt token came from at 56 to 112 concurrent agent sessions on four MI350X servers" style="width:100%; max-width:1100px"/></center>
+<center><img src="./images/glm53-6p2d-agentx-results.png" alt="System throughput, time to first token (p50 and p90), and where each prompt token came from with a split pool and a shared pool at 56 to 112 concurrent agent sessions on four MI350X servers" style="width:100%; max-width:1100px"/></center>
 
-<center><p>Figure 8. System throughput (all 32 GPUs), time to first token (p50 and p90), and where each prompt token came from at 56 to 112 concurrent sessions, with PP4 prefill and DCP4 decode.</p></center>
+<center><p>Figure 8. System throughput (all 32 GPUs), time to first token (p50 and p90), and where each prompt token came from, split pool vs shared pool, at 56 to 112 concurrent sessions, with PP4 prefill and DCP4 decode.</p></center>
 
 We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka-062126`), 15 minutes at each load. Traces whose peak context exceeds our 917,504-token input limit are skipped (10 of 393). Output lengths are pinned to the recorded ones. We report the whole system's throughput: every prompt token, cached or not, plus generated tokens, per second across all 32 GPUs.
 
 **Throughput and reuse.** Throughput rises from **256K tokens/s** at 56 sessions to **389K** at 96 and stays near 350K at 112, while time to first token stays at about 1.0 s at the median (0.96–1.05 s) and at or below 2.3 s at p90. KV cache reuse stays at **94–95%** at every load, against a trace ceiling of about 97%. As in Figure 6, Mooncake Store picks up what GPU memory can no longer keep: prefill GPU memory serves 70% of prompt tokens at 56 sessions and 54% at 96 and 112, while the Store's share grows from 26% to **40–41%**.
+
+**A split pool cannot keep up at high concurrency.** We repeated the sweep on the same deployment with a split pool, in which each server's Store serves only its own prefill instances. Throughput levels off at 156K–194K tokens/s, against 256K–389K with the shared pool: the shared pool is 1.6 times faster at 56 sessions and about twice as fast at 96 and 112. With the split pool, the Store serves only 12–15% of prompt tokens and KV cache reuse falls from 79% to 65% as sessions grow, so prefill computes 21–35% of prompt tokens instead of 4–6%. Time to first token at p90 climbs from 3.9 s to 19.3 s, while the shared pool stays at 1.9–2.3 s.
 <!-- neurospark-section:end -->
 
 ## Future Work
@@ -202,7 +204,7 @@ This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark sectio
 | Decode (both) | TP4 + DCP4, full CUDA graphs; ATOM gather / landing transfer on |
 | Common engine settings | FP8 KV cache, block size 16, max model length 1,048,576, max sequences 256, GPU memory utilization 0.85, prefix caching on, MTP off |
 | KV transfer | Mooncake Transfer Engine over RDMA, one QP per endpoint, each rank pinned to its nearest NIC |
-| Mooncake Store | One pool per rail (4 Masters; LRU eviction at 90%, 5% per pass); 8 Store services × 96 GiB per server on transparent huge pages after cache drop and compaction; each Store service on the next rail's NIC. Shared pool: all prefill instances use the same four Masters. Split pool (Figure 7): each server runs its own four Masters, used only by its own prefill instances |
+| Mooncake Store | One pool per rail (4 Masters; LRU eviction at 90%, 5% per pass); 8 Store services × 96 GiB per server on transparent huge pages after cache drop and compaction; each Store service on the next rail's NIC. Shared pool: all prefill instances use the same four Masters. Split pool (Figures 7 and 8): each server runs its own four Masters, used only by its own prefill instances |
 | Router, gate | One router per group (decode-aware, `power_of_two` over prefills); one KV admission gate: 10M tokens per decode instance × 0.9, input up to 917,504 and output up to 131,072 tokens, admission wait 30 s (replay) or 900 s (AgentX, whose warm-up primes every session at once) |
 | AgentX settings | `agentx profile`, concurrency 56 / 72 / 96 / 112, 900 s per load, 3 warm-up requests per lane, `ignore_eos` with recorded output lengths, reasoning off, `--max-context-length 917504` |
 | Replay settings | 160 lanes, Poisson arrivals at 0.6 / 0.8 / 1.0 RPS, 20 min per run, `max_tokens` 32,000, reasoning on, seed 7 |
