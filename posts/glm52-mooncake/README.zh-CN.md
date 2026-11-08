@@ -107,33 +107,33 @@ ATOM 的做法是先在 Prefill GPU 上把发往每张 Decode GPU 的 KV 聚合�
 <!-- neurospark-section:start -->
 ## 扩展到四台服务器：GLM-5.3 在 MI350X 上的 6P2D 部署（NeuroSpark）
 
-NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验：一组是和上文相同的 AgentX 测试，另一组是在我们的生产负载下比较分池和混池。
+NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验：一组是在我们的生产负载下比较分池和混池，另一组是和上文相同的 AgentX 测试。
 
 **部署形态。** 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Prefill 实例用 TP4；每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。这里的 Prefill 用的是张量并行而不是流水线并行，所以每个 Prefill rank 都持有完整的 MLA KV，Store 里每个 token 存 4 份（约 195 KB，而不是 48.7 KB）。没有开启多 token 预测。
 
 **KV 池。** 每块网卡都已经承担引擎的流量，所以 Store 与引擎共用网卡。我们按 RoCE rail 分池（4 个 Mooncake Master），每个 Prefill 实例的同号 rank 读写同一个池。包括 Decode 所在的服务器在内，每台服务器提供 8 个 96 GiB 的 Store 服务：每台 768 GiB，合计约 3 TiB，按每个 token 存 4 份计算约能容纳 1,690 万 token。
 
+### 生产负载下的分池与混池
+
+<center><img src="./images/glm53-1rps-split-vs-shared.zh.png" alt="每秒 1 个请求时分池与混池的首 token 时延和 prompt token 来源" style="width:100%; max-width:1000px"/></center>
+
+<center><p>图 7：每秒 1 个请求时，分池与混池的首 token 时延和每个 prompt token 的来源。</p></center>
+
+我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 1 个请求回放由生产流量重建的编程 Agent 会话，每组测 20 分钟。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例，相当于挂在 Prefill 上的 CPU 缓存；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。
+
+**共享才是 KV 池真正起作用的原因。** 分池时，Mooncake Store 只提供 **9%** 的 prompt token，总复用率 **47%**：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。混池时，Store 提供 **50%**，总复用率升到 **87%**；Prefill 需要实际计算的 prompt token 从 53% 降到 13%，首 token 时延的中位数从 3.2 秒降到 **1.0 秒**，p90 从 10.1 秒降到 **1.7 秒**。
+
 ### 32 卡上的 AgentX
 
 <center><img src="./images/glm53-6p2d-agentx-results.zh.png" alt="四台 MI350X 服务器在 56 到 112 个并发会话下的系统总吞吐、prompt token 来源和平均首 token 时延" style="width:100%; max-width:1100px"/></center>
 
-<center><p>图 7：56 到 112 个并发会话下的系统总吞吐（全部 32 张卡）、每个 prompt token 的来源和平均首 token 时延。</p></center>
+<center><p>图 8：56 到 112 个并发会话下的系统总吞吐（全部 32 张卡）、每个 prompt token 的来源和平均首 token 时延。</p></center>
 
 我们使用与上文相同的工具和 trace（InferenceX AgentX，`cc-traces-weka-062126`），每个负载点测 25 分钟。峰值上下文超过我们 917,504 token 输入上限的 trace 被跳过（393 条中的 10 条），输出长度固定为 trace 记录的长度。我们报告整个系统的吞吐：所有 prompt token（不论是否命中缓存）与生成 token 之和，按全部 32 张卡每秒计。
 
 **吞吐与复用。** 56 个会话时，系统在 32 张卡上的总吞吐约 **226K tokens/s**，**95%** 的 prompt token 来自复用（trace 理论上限 97%）：Prefill 显存提供 36%，Mooncake Store 提供 **59%**，平均首 token 时延 1.7 秒。
 
-**到哪里为止。** 与上文的单机结果不同，系统总吞吐在 56 个会话时达到峰值，之后下降：72 个会话 181K tokens/s，96 个会话 87K，112 个会话 81K。Store 仍然提供 42%–60% 的 prompt token，但需要 Prefill 实际计算的比例从 5% 升到 13%、21% 和 38%。瓶颈在 Prefill 一侧：Prefill 采用张量并行时，每个 token 在池里要存 4 份，同样的内存只能留住流水线并行 Prefill 大约四分之一的历史。会话的工作集超过池的容量后，更多长 prompt 需要重算，请求在 Prefill 前排队，平均首 token 时延升到 8.5 秒、32 秒和 66 秒。Decode 不是瓶颈：使用 DCP4 后，72 个会话时 Decode 的 KV 显存占用始终低于 40%。
-
-### 生产负载下的分池与混池
-
-<center><img src="./images/glm53-1rps-split-vs-shared.zh.png" alt="每秒 1 个请求时分池与混池的首 token 时延和 prompt token 来源" style="width:100%; max-width:1000px"/></center>
-
-<center><p>图 8：每秒 1 个请求时，分池与混池的首 token 时延和每个 prompt token 的来源。</p></center>
-
-我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 1 个请求回放由生产流量重建的编程 Agent 会话，每组测 20 分钟。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例，相当于挂在 Prefill 上的 CPU 缓存；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。
-
-**共享才是 KV 池真正起作用的原因。** 分池时，Mooncake Store 只提供 **9%** 的 prompt token，总复用率 **47%**：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。混池时，Store 提供 **50%**，总复用率升到 **87%**；Prefill 需要实际计算的 prompt token 从 53% 降到 13%，首 token 时延的中位数从 3.2 秒降到 **1.0 秒**，p90 从 10.1 秒降到 **1.7 秒**。
+**并发升高后吞吐为什么下降。** 超过 56 个会话后，吞吐降到 181K、87K 和 81K tokens/s，平均首 token 时延升到 8.5 秒、32 秒和 66 秒，需要 Prefill 实际计算的 prompt token 比例从 5% 升到 38%。我们认为主要原因在网络。我们的 RoCE 网络还没有生效的拥塞控制（PFC 关闭，ECN 没有生效），多块网卡同时发往一块网卡，或者一块网卡同时服务多个读取方时，带宽分配极不均匀：在两发一的测试里，一路流量拿到 369 Gb/s，另一路只有 0.9 Gb/s。跨服务器的两条路径都是这种形态：Prefill 到 Decode 的 KV 传输是多块卡写向同一张 Decode 卡，从 Store 恢复 KV 要从多台服务器上的 owner 读取。两者都要等最慢的那张卡传完才算完成。并发越高，同时进行的传输越多，最慢的那一份就越慢；传输和恢复变慢，请求在 Prefill 前排队，更多历史只能重算而不是从池中恢复。所以即使 Decode 还有余量（使用 DCP4 后，72 个会话时 Decode 的 KV 显存占用始终低于 40%），吞吐还是会下降。
 <!-- neurospark-section:end -->
 
 ## 下一步
@@ -145,6 +145,10 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 **增加 SSD 层**。有些 Agent 会话一停就是好几分钟甚至更久。[Mooncake 的 SSD offloading](https://kvcache.ai/blog/scaling-kv-cache-beyond-memory/) 能以远低于内存的成本保留它们的历史。
 
 **给 Decode 腾出空间**。Decode 把每个运行中请求的 KV 都放在显存里，最高负载时已接近占满。下一步是给每个 Prefill 实例配更多 Decode GPU，并让每张 Decode GPU 放下更多 KV。
+
+<!-- neurospark-futurework:start -->
+**多节点 RoCE 拥塞控制**。多对一和一对多的 RDMA 流量（跨服务器的 Prefill 到 Decode KV 传输，以及从 Store 恢复 KV）需要生效的拥塞控制（ECN/DCQCN 或 PFC），带宽才能在各张卡之间均匀分配。我们正在多节点网络上修复这一点，修复后会重新测量 AgentX。
+<!-- neurospark-futurework:end -->
 
 ## 致谢
 
