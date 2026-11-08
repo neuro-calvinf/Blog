@@ -107,33 +107,31 @@ We ran InferenceX AgentX against this deployment for an hour at each load, from 
 <!-- neurospark-section:start -->
 ## Scaling Out: GLM-5.3 on Four MI350X Servers (NeuroSpark)
 
-NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments: a comparison of a split pool and a shared pool at our production load, and the same AgentX sweep as above.
+NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments: a split pool against a shared pool on replayed production traffic, and the same AgentX sweep as above, with the same prefill and decode parallelism.
 
-**The deployment.** The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Every prefill instance runs TP4. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. Prefill here is tensor parallel, not pipeline parallel, so each prefill rank holds the whole MLA KV and the Store keeps four copies of every token (about 195 KB instead of 48.7 KB). Multi-token prediction is off.
+**The deployment.** The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. For the AgentX sweep, each prefill instance runs PP4, as in the single-server setup, so the Store keeps one copy of every token. The production-traffic comparison ran on our deployed recipe, whose prefill instances run TP4.
 
-**The pool.** Every NIC already carries engine traffic, so the Store shares them. We run one pool per RoCE rail (four Mooncake Masters), so the same rank of every prefill instance reads and writes the same pool. Each server, decode servers included, contributes eight 96 GiB Store services: 768 GiB per server, about 3 TiB in all, which holds about 16.9 million tokens at four copies each.
+**The pool.** Every NIC also carries engine traffic, so the Store shares them. We run one pool per RoCE rail (four Mooncake Masters), so the same rank of every prefill instance reads and writes the same pool. Each server, decode servers included, contributes eight 96 GiB Store services: 768 GiB per server, about 3 TiB in all. Only prefill instances read and write it.
 
 ### Split Pool vs Shared Pool at Production Load
 
-<center><img src="./images/glm53-1rps-split-vs-shared.png" alt="Time to first token and where each prompt token came from with a split pool and a shared pool at 1 request per second" style="width:100%; max-width:1000px"/></center>
+<center><img src="./images/glm53-1rps-split-vs-shared.png" alt="Time to first token and where each prompt token came from with a split pool and a shared pool at 1.0, 0.8 and 0.6 requests per second" style="width:100%; max-width:1100px"/></center>
 
-<center><p>Figure 7. Time to first token and where each prompt token came from, split pool vs shared pool, at 1 request per second.</p></center>
+<center><p>Figure 7. Time to first token (p90, with p50) and where each prompt token came from, split pool vs shared pool, at 1.0, 0.8 and 0.6 requests per second (warm turns).</p></center>
 
-Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed coding-agent sessions reconstructed from production traffic at 1 request per second for 20 minutes per arm. Both arms use the same deployment and the same 768 GiB of Store memory per server. The only difference is sharing. In the **split pool**, each server's memory serves only the prefill instances on that server, the way a CPU cache attached to prefill would. In the **shared pool**, all four servers' memory forms one pool that every prefill instance reads and writes.
+Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed coding-agent sessions reconstructed from production traffic at 1.0, 0.8 and 0.6 requests per second, 20 minutes per run, with production-style requests (up to 32K output tokens, reasoning on). Both arms use the same deployment and the same 768 GiB of Store memory per server; only sharing differs. In the **split pool**, each server's memory serves only the prefill instances on that server. In the **shared pool**, all four servers' memory forms one pool that every prefill instance reads and writes. Each replay lane starts partway into a session, so its first turn is a cold prefill in every arm; the statistics cover the turns after it.
 
-**Sharing is what makes the pool pay off.** With a split pool, Mooncake Store serves only **9%** of prompt tokens and total reuse is **47%**. The gate and router spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. With the shared pool, the Store serves **50%** and total reuse rises to **87%**. Prefill computes 13% of prompt tokens instead of 53%, and time to first token falls from 3.2 s to **1.0 s** at the median and from 10.1 s to **1.7 s** at p90.
+**Sharing is what makes the pool pay off.** With the shared pool, Mooncake Store serves **58%** of prompt tokens at every load and KV cache reuse is **95–96%**: prefill computes only 4–5% of prompt tokens, and time to first token stays at about 1.0 s at the median and 1.7–1.8 s at p90. With the split pool, the Store serves only about 11% and reuse falls to about 51%. The gate and routers spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. Prefill then computes about half of every prompt, and time to first token rises to 7–10 s at p90. _[0.8 RPS split-pool run: pending.]_
 
 ### AgentX on 32 GPUs
 
 <center><img src="./images/glm53-6p2d-agentx-results.png" alt="System throughput, where each prompt token came from, and mean time to first token at 56 to 112 concurrent agent sessions on four MI350X servers" style="width:100%; max-width:1100px"/></center>
 
-<center><p>Figure 8. System throughput (all 32 GPUs), where each prompt token came from, and mean time to first token at 56 to 112 concurrent sessions.</p></center>
+<center><p>Figure 8. System throughput (all 32 GPUs), where each prompt token came from, and mean time to first token at 56 to 112 concurrent sessions, with PP4 prefill and DCP4 decode.</p></center>
 
-We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka-062126`), 25 minutes at each load. Traces whose peak context exceeds our 917,504-token input limit are skipped (10 of 393). Output lengths are pinned to the recorded ones. We report the whole system's throughput: every prompt token, cached or not, plus generated tokens, per second across all 32 GPUs.
+We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka-062126`), 15 minutes at each load. Traces whose peak context exceeds our 917,504-token input limit are skipped (10 of 393). Output lengths are pinned to the recorded ones. We report the whole system's throughput: every prompt token, cached or not, plus generated tokens, per second across all 32 GPUs.
 
-**Throughput and reuse.** At 56 sessions the system serves about **226K tokens/s** across 32 GPUs and reuses **95%** of prompt tokens, against a trace ceiling of 97%: prefill GPU memory serves 36% and Mooncake Store **59%**. Mean time to first token is 1.7 s.
-
-**Why throughput falls at higher concurrency.** Beyond 56 sessions throughput drops to 181K, 87K and 81K tokens/s, mean time to first token rises to 8.5 s, 32 s and 66 s, and the share of prompt tokens that prefill has to compute grows from 5% to 38%. We attribute this mainly to the network. RoCE congestion control is not yet working on our fabric (PFC is off and ECN is not in effect), so when several NICs send to one NIC, or one NIC serves several readers, bandwidth is split very unevenly: in a two-to-one test, one flow got 369 Gb/s and the other 0.9 Gb/s. Both paths that span servers have this shape. Prefill-to-decode KV transfer is many-to-one onto each decode GPU, and a Store restore reads from owners on several servers. Each finishes only when its slowest GPU's transfer finishes. As concurrency rises, more transfers overlap and the slowest share gets slower. Transfers and restores stall, requests queue in front of prefill, and more history is recomputed instead of restored, so throughput falls even though decode has room: with DCP4, decode KV memory stayed below 40% full at 72 sessions.
+**Throughput and reuse.** Throughput rises from **256K tokens/s** at 56 sessions to **389K** at 96 and stays near 350K at 112, while mean time to first token stays between 1.15 and 1.36 s (p90 at or below 2.3 s). KV cache reuse stays at **94–95%** at every load, against a trace ceiling of about 97%. As in Figure 6, Mooncake Store picks up what GPU memory can no longer keep: prefill GPU memory serves 70% of prompt tokens at 56 sessions and 54% at 96 and 112, while the Store's share grows from 26% to **40–41%**.
 <!-- neurospark-section:end -->
 
 ## Future Work
@@ -161,3 +159,50 @@ We thank the Mooncake community for Mooncake Store and Transfer Engine and for w
 - AgentX benchmark: https://github.com/SemiAnalysisAI/agentx-harness
 - AgentX trace corpus: https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126
 - InferenceX results for this deployment: https://github.com/SemiAnalysisAI/InferenceX/pull/4045
+
+<!-- neurospark-appendix:start -->
+## Appendix: Test Environment and Reproducibility (Four-Node GLM-5.3)
+
+This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark section (Figures 7 and 8). Values were read on the test hosts on Nov 7, 2026; anything we could not determine is marked as not recorded.
+
+**Hardware and system** (identical on all four servers unless noted)
+
+| Item | Value |
+|---|---|
+| Servers | 4, each 8× AMD Instinct MI350X (gfx950, 288 GB HBM3E), VBIOS 00165723 |
+| CPU, memory | 2× AMD EPYC 9755 (2 NUMA nodes), 1,511 GiB |
+| OS, kernel | Ubuntu 22.04.5 LTS, 6.8.0-138-generic; `iommu=pt`, `numa_balancing=0`, THP `madvise`, no reserved huge pages |
+| GPU driver | amdgpu 6.16.13 |
+| RDMA NICs | 8× Broadcom BCM957608 (400 Gb/s RoCE v2, MTU 9000), one per GPU; firmware 237.1.148.0 (one server: 230.2.49.0); bnxt_en / bnxt_re 237.1.137.0 |
+| Topology | GPU *i* uses its nearest NIC; slot-0 GPUs 0–3 and slot-1 GPUs 5,4,7,6 map to the same four rails, so rank *i* of every engine is on the same rail. Switch model, firmware and switch-side settings: not recorded |
+
+**Software**
+
+| Item | Value |
+|---|---|
+| Container image | `rocm/atom-dev:nightly_202610231448-rocm10.0`, `sha256:082403b0dab5ef607d826f431ab636d2c146114d105b5e83b3961a3eadfcfb75` (all engines, Store, router, gate and load clients) |
+| ATOM | commit `573e9c7de8e3462f24cdc6242970263493e3612b` (0.1.9.dev16) |
+| Mooncake Store / Transfer Engine | 0.3.13 (git `78566d45`) |
+| AITER | 0.1.27.dev117, commit `1e2d557d7877f880e7daf3ac8d5cc45f918f6d9e` |
+| ROCm, PyTorch, Triton | ROCm 10.0.0 (in image), PyTorch 2.11.0+rocm10.0.0, Triton 3.8.0 |
+| Router | atomesh 0.2.0 |
+| Model | `amd/GLM-5.3-Quark-MXFP4-AttnFP8`, revision `4992911b6f4e4d20947573ac7e04ff7d18b32288` (78 layers) |
+| Benchmark | AgentX harness 1.0.7, dataset `semianalysisai/cc-traces-weka-062126` revision `23f152f6f0f9399a85901b89a6458def0ef16729`. InferenceX: not used directly |
+
+**Configuration**
+
+| Item | Value |
+|---|---|
+| Placement | 6P2D in two groups (3 prefill + 1 decode each); no prefill on its own group's decode server; each engine on 4 GPUs of one NUMA node |
+| Prefill (Figure 8) | TP1 × PP4, layer split 20/20/20/18, eager, max batched tokens 8,192 |
+| Prefill (Figure 7) | TP4, full CUDA graphs, max batched tokens 16,384 |
+| Decode (both) | TP4 + DCP4, full CUDA graphs; ATOM gather / landing transfer on |
+| Common engine settings | FP8 KV cache, block size 16, max model length 1,048,576, max sequences 256, GPU memory utilization 0.85, prefix caching on, MTP off |
+| KV transfer | Mooncake Transfer Engine over RDMA, one QP per endpoint, each rank pinned to its nearest NIC |
+| Mooncake Store | One pool per rail (4 Masters; LRU eviction at 90%, 5% per pass); 8 Store services × 96 GiB per server on transparent huge pages after cache drop and compaction; each Store service on the next rail's NIC. Shared pool: all prefill instances use the same four Masters. Split pool (Figure 7): each server runs its own four Masters, used only by its own prefill instances |
+| Router, gate | One router per group (decode-aware, `power_of_two` over prefills); one KV admission gate: 10M tokens per decode instance × 0.9, input up to 917,504 and output up to 131,072 tokens, admission wait 30 s (replay) or 900 s (AgentX, whose warm-up primes every session at once) |
+| AgentX settings | `agentx profile`, concurrency 56 / 72 / 96 / 112, 900 s per load, 3 warm-up requests per lane, `ignore_eos` with recorded output lengths, reasoning off, `--max-context-length 917504` |
+| Replay settings | 160 lanes, Poisson arrivals at 1.0 / 0.8 / 0.6 RPS, 20 min per run, `max_tokens` 32,000, reasoning on, seed 7 |
+| Network (during all runs) | PFC off on all priorities, ECN/CNP counters 0, no NIC congestion-control configuration (lossy RoCE) |
+| Launch files | HW_Optimization recipe `disagg_mxfp4_atom_mooncake` at commit `91a8f996`, plus two experimental changes (prefill pipeline parallelism and Store environment pass-through in `start.sh`, `ignore_eos` accepted by the gate) and our launch scripts; available on request |
+<!-- neurospark-appendix:end -->
