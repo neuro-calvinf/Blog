@@ -117,21 +117,21 @@ NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake o
 
 <center><img src="./images/glm53-1rps-split-vs-shared.png" alt="Time to first token and where each prompt token came from with a split pool and a shared pool at 0.6, 0.8 and 1.0 requests per second" style="width:100%; max-width:1100px"/></center>
 
-<center><p>Figure 7. Time to first token (p90, with p50) and where each prompt token came from, split pool vs shared pool, at 0.6, 0.8 and 1.0 requests per second (warm turns).</p></center>
+<center><p>Figure 7. Time to first token (p50 and p90) and where each prompt token came from, split pool vs shared pool, at 0.6, 0.8 and 1.0 requests per second (warm turns).</p></center>
 
 Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed coding-agent sessions reconstructed from production traffic at 0.6, 0.8 and 1.0 requests per second, 20 minutes per run, with production-style requests (up to 32K output tokens, reasoning on). Both arms use the same deployment and the same 768 GiB of Store memory per server; only sharing differs. In the **split pool**, each server's memory serves only the prefill instances on that server. In the **shared pool**, all four servers' memory forms one pool that every prefill instance reads and writes. Each replay lane starts partway into a session, so its first turn is a cold prefill in every arm; the statistics cover the turns after it.
 
-**Sharing is what makes the pool pay off.** With the shared pool, Mooncake Store serves **58%** of prompt tokens at every load and KV cache reuse is **95–96%**: prefill computes only 4–5% of prompt tokens, and time to first token stays at about 1.0 s at the median and 1.7–1.8 s at p90. With the split pool, the Store serves only about 11% and reuse falls to about 51%. The gate and routers spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. Prefill then computes about half of every prompt, and time to first token rises to 7–10 s at p90. _[0.8 RPS split-pool run: pending.]_
+**Sharing is what makes the pool pay off.** With the shared pool, Mooncake Store serves **58%** of prompt tokens at every load and KV cache reuse is **95–96%**: prefill computes only 4–5% of prompt tokens, and time to first token stays at about 1.0 s at the median and 1.7–1.8 s at p90. With the split pool, the Store serves only about 11% and reuse falls to 51–55%. The gate and routers spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. Prefill then computes about half of every prompt, and time to first token rises to 7–10 s at p90.
 
 ### AgentX on 32 GPUs
 
-<center><img src="./images/glm53-6p2d-agentx-results.png" alt="System throughput, where each prompt token came from, and mean time to first token at 56 to 112 concurrent agent sessions on four MI350X servers" style="width:100%; max-width:1100px"/></center>
+<center><img src="./images/glm53-6p2d-agentx-results.png" alt="System throughput, time to first token (p50 and p90), and where each prompt token came from at 56 to 112 concurrent agent sessions on four MI350X servers" style="width:100%; max-width:1100px"/></center>
 
-<center><p>Figure 8. System throughput (all 32 GPUs), where each prompt token came from, and mean time to first token at 56 to 112 concurrent sessions, with PP4 prefill and DCP4 decode.</p></center>
+<center><p>Figure 8. System throughput (all 32 GPUs), time to first token (p50 and p90), and where each prompt token came from at 56 to 112 concurrent sessions, with PP4 prefill and DCP4 decode.</p></center>
 
 We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka-062126`), 15 minutes at each load. Traces whose peak context exceeds our 917,504-token input limit are skipped (10 of 393). Output lengths are pinned to the recorded ones. We report the whole system's throughput: every prompt token, cached or not, plus generated tokens, per second across all 32 GPUs.
 
-**Throughput and reuse.** Throughput rises from **256K tokens/s** at 56 sessions to **389K** at 96 and stays near 350K at 112, while mean time to first token stays between 1.15 and 1.36 s (p90 at or below 2.3 s). KV cache reuse stays at **94–95%** at every load, against a trace ceiling of about 97%. As in Figure 6, Mooncake Store picks up what GPU memory can no longer keep: prefill GPU memory serves 70% of prompt tokens at 56 sessions and 54% at 96 and 112, while the Store's share grows from 26% to **40–41%**.
+**Throughput and reuse.** Throughput rises from **256K tokens/s** at 56 sessions to **389K** at 96 and stays near 350K at 112, while time to first token stays at about 1.0 s at the median (0.96–1.05 s) and at or below 2.3 s at p90. KV cache reuse stays at **94–95%** at every load, against a trace ceiling of about 97%. As in Figure 6, Mooncake Store picks up what GPU memory can no longer keep: prefill GPU memory serves 70% of prompt tokens at 56 sessions and 54% at 96 and 112, while the Store's share grows from 26% to **40–41%**.
 <!-- neurospark-section:end -->
 
 ## Future Work

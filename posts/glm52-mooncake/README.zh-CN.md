@@ -117,21 +117,21 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 
 <center><img src="./images/glm53-1rps-split-vs-shared.zh.png" alt="每秒 0.6、0.8、1.0 个请求时分池与混池的首 token 时延和 prompt token 来源" style="width:100%; max-width:1100px"/></center>
 
-<center><p>图 7：每秒 0.6、0.8 和 1.0 个请求时，分池与混池的首 token 时延（p90，标注 p50）和每个 prompt token 的来源（热轮次）。</p></center>
+<center><p>图 7：每秒 0.6、0.8 和 1.0 个请求时，分池与混池的首 token 时延（p50 和 p90）和每个 prompt token 的来源（热轮次）。</p></center>
 
 我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 0.6、0.8 和 1.0 个请求回放由生产流量重建的编程 Agent 会话，每组 20 分钟，请求按生产方式设置（输出最多 32K token，开启推理）。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。每条回放 lane 从会话中途开始，所以第一轮在两组里都是冷 Prefill；统计只覆盖之后的轮次。
 
-**共享才是 KV 池真正起作用的原因。** 混池时，各负载下 Mooncake Store 都提供 **58%** 的 prompt token，KV cache 复用率 **95%–96%**：Prefill 只需实际计算 4%–5% 的 prompt token，首 token 时延的中位数约 1.0 秒，p90 为 1.7–1.8 秒。分池时，Store 只提供约 11%，复用率降到约 51%：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。于是 Prefill 要实际计算约一半的 prompt，首 token 时延的 p90 升到 7–10 秒。 _[0.8 RPS 分池：待补。]_
+**共享才是 KV 池真正起作用的原因。** 混池时，各负载下 Mooncake Store 都提供 **58%** 的 prompt token，KV cache 复用率 **95%–96%**：Prefill 只需实际计算 4%–5% 的 prompt token，首 token 时延的中位数约 1.0 秒，p90 为 1.7–1.8 秒。分池时，Store 只提供约 11%，复用率降到 51%–55%：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。于是 Prefill 要实际计算约一半的 prompt，首 token 时延的 p90 升到 7–10 秒。
 
 ### 32 卡上的 AgentX
 
-<center><img src="./images/glm53-6p2d-agentx-results.zh.png" alt="四台 MI350X 服务器在 56 到 112 个并发会话下的系统总吞吐、prompt token 来源和平均首 token 时延" style="width:100%; max-width:1100px"/></center>
+<center><img src="./images/glm53-6p2d-agentx-results.zh.png" alt="四台 MI350X 服务器在 56 到 112 个并发会话下的系统总吞吐、首 token 时延（p50 和 p90）和 prompt token 来源" style="width:100%; max-width:1100px"/></center>
 
-<center><p>图 8：PP4 Prefill 加 DCP4 Decode，56 到 112 个并发会话下的系统总吞吐（全部 32 张卡）、每个 prompt token 的来源和平均首 token 时延。</p></center>
+<center><p>图 8：PP4 Prefill 加 DCP4 Decode，56 到 112 个并发会话下的系统总吞吐（全部 32 张卡）、首 token 时延（p50 和 p90）和每个 prompt token 的来源。</p></center>
 
 我们使用与上文相同的工具和 trace（InferenceX AgentX，`cc-traces-weka-062126`），每个负载点测 15 分钟。峰值上下文超过我们 917,504 token 输入上限的 trace 被跳过（393 条中的 10 条），输出长度固定为 trace 记录的长度。我们报告整个系统的吞吐：所有 prompt token（不论是否命中缓存）与生成 token 之和，按全部 32 张卡每秒计。
 
-**吞吐与复用。** 系统总吞吐从 56 个会话时的 **256K tokens/s** 升到 96 个会话时的 **389K**，112 个会话时保持在约 350K；平均首 token 时延始终在 1.15–1.36 秒之间（p90 不超过 2.3 秒）。各负载下 KV cache 复用率都保持在 **94%–95%**（trace 理论上限约 97%）。与图 6 一样，显存留不住的部分由 Mooncake Store 补上：56 个会话时 Prefill 显存提供 70% 的 prompt token，96 和 112 个会话时降到 54%，Store 的比例则从 26% 升到 **40%–41%**。
+**吞吐与复用。** 系统总吞吐从 56 个会话时的 **256K tokens/s** 升到 96 个会话时的 **389K**，112 个会话时保持在约 350K；首 token 时延的中位数约 1.0 秒（0.96–1.05 秒），p90 不超过 2.3 秒。各负载下 KV cache 复用率都保持在 **94%–95%**（trace 理论上限约 97%）。与图 6 一样，显存留不住的部分由 Mooncake Store 补上：56 个会话时 Prefill 显存提供 70% 的 prompt token，96 和 112 个会话时降到 54%，Store 的比例则从 26% 升到 **40%–41%**。
 <!-- neurospark-section:end -->
 
 ## 下一步
