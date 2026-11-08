@@ -125,10 +125,12 @@ We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka
 |---|---|---|---|---|
 | 56 | 226K | 36% / 59% / 5% | 95% | 1.7 s |
 | 72 | 181K | 27% / 60% / 13% | 87% | 8.5 s |
-| 96 | pending | pending / pending / pending | pending | pending |
-| 112 | pending | pending / pending / pending | pending | pending |
+| 96 | 87K | 25% / 54% / 21% | 79% | 31.8 s |
+| 112 | 81K | 20% / 42% / 38% | 62% | 66.2 s |
 
-**Throughput and reuse.** At 56 sessions the system serves about **226K tokens/s** across 32 GPUs, and **95%** of prompt tokens are reused against a trace ceiling of 97%: prefill GPU memory serves 36% and Mooncake Store **59%**. At 72 sessions the Store still serves 60%, but total reuse falls to 87% and throughput to 181K tokens/s. Prefill becomes the bottleneck: requests wait in front of prefill, and mean time to first token rises from 1.7 s to 8.5 s, while decode KV memory stays below 40% full. With four copies of every token, the pool holds fewer sessions' history than a pipeline-parallel prefill would. _[96 and 112 sessions: pending.]_
+**Throughput and reuse.** At 56 sessions the system serves about **226K tokens/s** across 32 GPUs and reuses **95%** of prompt tokens, against a trace ceiling of 97%: prefill GPU memory serves 36% and Mooncake Store **59%**. Mean time to first token is 1.7 s.
+
+**Where it stops.** Unlike the single-server results above, throughput peaks at 56 sessions and then falls: 181K tokens/s at 72, 87K at 96 and 81K at 112. The Store still serves 42–60% of prompt tokens, but the share that prefill has to compute grows from 5% to 13%, 21% and 38%. The limit is the prefill side. With tensor-parallel prefill every token takes four copies in the pool, so the pool holds roughly a quarter of the history that a pipeline-parallel prefill would keep. As the sessions' working set outgrows it, more long prompts are recomputed, requests queue in front of prefill, and mean time to first token rises to 8.5 s, 32 s and 66 s. Decode is not the constraint: with DCP4, decode KV memory stayed below 40% full at 72 sessions.
 
 ### Split Pool vs Shared Pool at Production Load
 
@@ -140,10 +142,10 @@ Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed codin
 
 | Pool | TTFT p50 / p90 | Prompt tokens: GPU / Store / computed | Total reuse |
 |---|---|---|---|
-| Split pool (per server) | pending / pending | pending / pending / pending | pending |
-| Shared pool (4 servers) | pending / pending | pending / pending / pending | pending |
+| Split pool (per server) | 3.17 s / 10.07 s | 38% / 9% / 53% | 47% |
+| Shared pool (4 servers) | 0.97 s / 1.74 s | 37% / 50% / 13% | 87% |
 
-_[Results pending.]_
+**Sharing is what makes the pool pay off.** With a split pool, Mooncake Store serves only **9%** of prompt tokens and total reuse is **47%**. The gate and router spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. With the shared pool, the Store serves **50%** and total reuse rises to **87%**. Prefill computes 13% of prompt tokens instead of 53%, and time to first token falls from 3.2 s to **1.0 s** at the median and from 10.1 s to **1.7 s** at p90.
 <!-- neurospark-section:end -->
 
 ## Future Work
