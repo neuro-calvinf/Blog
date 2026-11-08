@@ -154,6 +154,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <p><strong>Where it stops.</strong> Up to 96 sessions, median time to first token stays at 2.5 s or below. At 112 sessions throughput still holds at 44K, but the server has run out of headroom: decode's KV memory is a median <strong>91%</strong> full, requests start to queue in front of prefill, and median time to first token reaches about 7 s.</p>
 
 
+
 <!-- neurospark-section:start --><h2 id="en-scaling-out-glm-5-3-on-four-mi350x-servers-neurospark">Scaling Out: GLM-5.3 on Four MI350X Servers (NeuroSpark)</h2>
 <p>NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments: the same AgentX sweep as above, and a comparison of a split pool and a shared pool at our production load.</p>
 <p><strong>The deployment.</strong> The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Every prefill instance runs TP4. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. Prefill here is tensor parallel, not pipeline parallel, so each prefill rank holds the whole MLA KV and the Store keeps four copies of every token (about 195 KB instead of 48.7 KB). Multi-token prediction is off.</p>
@@ -164,47 +165,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <center><p>Figure 7. System throughput (all 32 GPUs), where each prompt token came from, and mean time to first token at 56 to 112 concurrent sessions.</p></center>
 
 <p>We used the same harness and traces as above (InferenceX AgentX, <code>cc-traces-weka-062126</code>), 25 minutes at each load. Traces whose peak context exceeds our 917,504-token input limit are skipped (10 of 393). Output lengths are pinned to the recorded ones. We report the whole system's throughput: every prompt token, cached or not, plus generated tokens, per second across all 32 GPUs.</p>
-<table>
-<thead>
-<tr>
-<th>Concurrent sessions</th>
-<th>System throughput (tokens/s)</th>
-<th>Prompt tokens: GPU / Store / computed</th>
-<th>Total reuse</th>
-<th>Mean TTFT</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>56</td>
-<td>226K</td>
-<td>36% / 59% / 5%</td>
-<td>95%</td>
-<td>1.7 s</td>
-</tr>
-<tr>
-<td>72</td>
-<td>181K</td>
-<td>27% / 60% / 13%</td>
-<td>87%</td>
-<td>8.5 s</td>
-</tr>
-<tr>
-<td>96</td>
-<td>87K</td>
-<td>25% / 54% / 21%</td>
-<td>79%</td>
-<td>31.8 s</td>
-</tr>
-<tr>
-<td>112</td>
-<td>81K</td>
-<td>20% / 42% / 38%</td>
-<td>62%</td>
-<td>66.2 s</td>
-</tr>
-</tbody>
-</table>
 <p><strong>Throughput and reuse.</strong> At 56 sessions the system serves about <strong>226K tokens/s</strong> across 32 GPUs and reuses <strong>95%</strong> of prompt tokens, against a trace ceiling of 97%: prefill GPU memory serves 36% and Mooncake Store <strong>59%</strong>. Mean time to first token is 1.7 s.</p>
 <p><strong>Where it stops.</strong> Unlike the single-server results above, throughput peaks at 56 sessions and then falls: 181K tokens/s at 72, 87K at 96 and 81K at 112. The Store still serves 42–60% of prompt tokens, but the share that prefill has to compute grows from 5% to 13%, 21% and 38%. The limit is the prefill side. With tensor-parallel prefill every token takes four copies in the pool, so the pool holds roughly a quarter of the history that a pipeline-parallel prefill would keep. As the sessions' working set outgrows it, more long prompts are recomputed, requests queue in front of prefill, and mean time to first token rises to 8.5 s, 32 s and 66 s. Decode is not the constraint: with DCP4, decode KV memory stayed below 40% full at 72 sessions.</p>
 <h3 id="en-split-pool-vs-shared-pool-at-production-load">Split Pool vs Shared Pool at Production Load</h3>
@@ -213,30 +173,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <center><p>Figure 8. Time to first token and where each prompt token came from, split pool vs shared pool, at 1 request per second.</p></center>
 
 <p>Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed coding-agent sessions reconstructed from production traffic at 1 request per second for 20 minutes per arm. Both arms use the same deployment and the same 768 GiB of Store memory per server. The only difference is sharing. In the <strong>split pool</strong>, each server's memory serves only the prefill instances on that server, the way a CPU cache attached to prefill would. In the <strong>shared pool</strong>, all four servers' memory forms one pool that every prefill instance reads and writes.</p>
-<table>
-<thead>
-<tr>
-<th>Pool</th>
-<th>TTFT p50 / p90</th>
-<th>Prompt tokens: GPU / Store / computed</th>
-<th>Total reuse</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Split pool (per server)</td>
-<td>3.17 s / 10.07 s</td>
-<td>38% / 9% / 53%</td>
-<td>47%</td>
-</tr>
-<tr>
-<td>Shared pool (4 servers)</td>
-<td>0.97 s / 1.74 s</td>
-<td>37% / 50% / 13%</td>
-<td>87%</td>
-</tr>
-</tbody>
-</table>
 <p><strong>Sharing is what makes the pool pay off.</strong> With a split pool, Mooncake Store serves only <strong>9%</strong> of prompt tokens and total reuse is <strong>47%</strong>. The gate and router spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. With the shared pool, the Store serves <strong>50%</strong> and total reuse rises to <strong>87%</strong>. Prefill computes 13% of prompt tokens instead of 53%, and time to first token falls from 3.2 s to <strong>1.0 s</strong> at the median and from 10.1 s to <strong>1.7 s</strong> at p90.</p><!-- neurospark-section:end -->
 <h2 id="en-future-work">Future Work</h2>
 <p>ATOM with Mooncake now keeps agent history within reach on one server, but there is room to go further.</p>
@@ -318,6 +254,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <p><strong>到哪里为止。</strong> 96 个会话以内，首 token 时延的中位数不超过 2.5 秒。到 112 个会话，单卡吞吐仍保持在约 44K，但服务器已没有余量：Decode 的 KV 显存占用中位数达到 <strong>91%</strong>，请求开始在 Prefill 前排队，首 token 时延的中位数升到约 7 秒。</p>
 
 
+
 <!-- neurospark-section:start --><h2 id="zh-neurospark-scaling-out">扩展到四台服务器：GLM-5.3 在 MI350X 上的 6P2D 部署（NeuroSpark）</h2>
 <p>NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验：一组是和上文相同的 AgentX 测试，另一组是在我们的生产负载下比较分池和混池。</p>
 <p><strong>部署形态。</strong> 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Prefill 实例用 TP4；每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。这里的 Prefill 用的是张量并行而不是流水线并行，所以每个 Prefill rank 都持有完整的 MLA KV，Store 里每个 token 存 4 份（约 195 KB，而不是 48.7 KB）。没有开启多 token 预测。</p>
@@ -328,47 +265,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <center><p>图 7：56 到 112 个并发会话下的系统总吞吐（全部 32 张卡）、每个 prompt token 的来源和平均首 token 时延。</p></center>
 
 <p>我们使用与上文相同的工具和 trace（InferenceX AgentX，<code>cc-traces-weka-062126</code>），每个负载点测 25 分钟。峰值上下文超过我们 917,504 token 输入上限的 trace 被跳过（393 条中的 10 条），输出长度固定为 trace 记录的长度。我们报告整个系统的吞吐：所有 prompt token（不论是否命中缓存）与生成 token 之和，按全部 32 张卡每秒计。</p>
-<table>
-<thead>
-<tr>
-<th>并发会话数</th>
-<th>系统总吞吐（tokens/s）</th>
-<th>prompt token：显存 / Store / 实际计算</th>
-<th>总复用率</th>
-<th>平均首 token 时延</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>56</td>
-<td>226K</td>
-<td>36% / 59% / 5%</td>
-<td>95%</td>
-<td>1.7 s</td>
-</tr>
-<tr>
-<td>72</td>
-<td>181K</td>
-<td>27% / 60% / 13%</td>
-<td>87%</td>
-<td>8.5 s</td>
-</tr>
-<tr>
-<td>96</td>
-<td>87K</td>
-<td>25% / 54% / 21%</td>
-<td>79%</td>
-<td>31.8 s</td>
-</tr>
-<tr>
-<td>112</td>
-<td>81K</td>
-<td>20% / 42% / 38%</td>
-<td>62%</td>
-<td>66.2 s</td>
-</tr>
-</tbody>
-</table>
 <p><strong>吞吐与复用。</strong> 56 个会话时，系统在 32 张卡上的总吞吐约 <strong>226K tokens/s</strong>，<strong>95%</strong> 的 prompt token 来自复用（trace 理论上限 97%）：Prefill 显存提供 36%，Mooncake Store 提供 <strong>59%</strong>，平均首 token 时延 1.7 秒。</p>
 <p><strong>到哪里为止。</strong> 与上文的单机结果不同，系统总吞吐在 56 个会话时达到峰值，之后下降：72 个会话 181K tokens/s，96 个会话 87K，112 个会话 81K。Store 仍然提供 42%–60% 的 prompt token，但需要 Prefill 实际计算的比例从 5% 升到 13%、21% 和 38%。瓶颈在 Prefill 一侧：Prefill 采用张量并行时，每个 token 在池里要存 4 份，同样的内存只能留住流水线并行 Prefill 大约四分之一的历史。会话的工作集超过池的容量后，更多长 prompt 需要重算，请求在 Prefill 前排队，平均首 token 时延升到 8.5 秒、32 秒和 66 秒。Decode 不是瓶颈：使用 DCP4 后，72 个会话时 Decode 的 KV 显存占用始终低于 40%。</p>
 <h3 id="zh-neurospark-split-shared">生产负载下的分池与混池</h3>
@@ -377,30 +273,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <center><p>图 8：每秒 1 个请求时，分池与混池的首 token 时延和每个 prompt token 的来源。</p></center>
 
 <p>我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 1 个请求回放由生产流量重建的编程 Agent 会话，每组测 20 分钟。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：<strong>分池</strong>时，每台服务器的内存只服务本机的 Prefill 实例，相当于挂在 Prefill 上的 CPU 缓存；<strong>混池</strong>时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。</p>
-<table>
-<thead>
-<tr>
-<th>池</th>
-<th>首 token 时延 p50 / p90</th>
-<th>prompt token：显存 / Store / 实际计算</th>
-<th>总复用率</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>分池（每台独立）</td>
-<td>3.17 s / 10.07 s</td>
-<td>38% / 9% / 53%</td>
-<td>47%</td>
-</tr>
-<tr>
-<td>混池（4 台共享）</td>
-<td>0.97 s / 1.74 s</td>
-<td>37% / 50% / 13%</td>
-<td>87%</td>
-</tr>
-</tbody>
-</table>
 <p><strong>共享才是 KV 池真正起作用的原因。</strong> 分池时，Mooncake Store 只提供 <strong>9%</strong> 的 prompt token，总复用率 <strong>47%</strong>：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。混池时，Store 提供 <strong>50%</strong>，总复用率升到 <strong>87%</strong>；Prefill 需要实际计算的 prompt token 从 53% 降到 13%，首 token 时延的中位数从 3.2 秒降到 <strong>1.0 秒</strong>，p90 从 10.1 秒降到 <strong>1.7 秒</strong>。</p><!-- neurospark-section:end -->
 <h2 id="zh-future-work">下一步</h2>
 <p>借助 Mooncake，ATOM 已经能在一台服务器上留住 Agent 的历史，但仍有继续推进的空间。</p>

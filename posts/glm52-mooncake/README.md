@@ -121,13 +121,6 @@ NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake o
 
 We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka-062126`), 25 minutes at each load. Traces whose peak context exceeds our 917,504-token input limit are skipped (10 of 393). Output lengths are pinned to the recorded ones. We report the whole system's throughput: every prompt token, cached or not, plus generated tokens, per second across all 32 GPUs.
 
-| Concurrent sessions | System throughput (tokens/s) | Prompt tokens: GPU / Store / computed | Total reuse | Mean TTFT |
-|---|---|---|---|---|
-| 56 | 226K | 36% / 59% / 5% | 95% | 1.7 s |
-| 72 | 181K | 27% / 60% / 13% | 87% | 8.5 s |
-| 96 | 87K | 25% / 54% / 21% | 79% | 31.8 s |
-| 112 | 81K | 20% / 42% / 38% | 62% | 66.2 s |
-
 **Throughput and reuse.** At 56 sessions the system serves about **226K tokens/s** across 32 GPUs and reuses **95%** of prompt tokens, against a trace ceiling of 97%: prefill GPU memory serves 36% and Mooncake Store **59%**. Mean time to first token is 1.7 s.
 
 **Where it stops.** Unlike the single-server results above, throughput peaks at 56 sessions and then falls: 181K tokens/s at 72, 87K at 96 and 81K at 112. The Store still serves 42–60% of prompt tokens, but the share that prefill has to compute grows from 5% to 13%, 21% and 38%. The limit is the prefill side. With tensor-parallel prefill every token takes four copies in the pool, so the pool holds roughly a quarter of the history that a pipeline-parallel prefill would keep. As the sessions' working set outgrows it, more long prompts are recomputed, requests queue in front of prefill, and mean time to first token rises to 8.5 s, 32 s and 66 s. Decode is not the constraint: with DCP4, decode KV memory stayed below 40% full at 72 sessions.
@@ -139,11 +132,6 @@ We used the same harness and traces as above (InferenceX AgentX, `cc-traces-weka
 <center><p>Figure 8. Time to first token and where each prompt token came from, split pool vs shared pool, at 1 request per second.</p></center>
 
 Our GLM-5.3 traffic averages about 0.8 requests per second, so we replayed coding-agent sessions reconstructed from production traffic at 1 request per second for 20 minutes per arm. Both arms use the same deployment and the same 768 GiB of Store memory per server. The only difference is sharing. In the **split pool**, each server's memory serves only the prefill instances on that server, the way a CPU cache attached to prefill would. In the **shared pool**, all four servers' memory forms one pool that every prefill instance reads and writes.
-
-| Pool | TTFT p50 / p90 | Prompt tokens: GPU / Store / computed | Total reuse |
-|---|---|---|---|
-| Split pool (per server) | 3.17 s / 10.07 s | 38% / 9% / 53% | 47% |
-| Shared pool (4 servers) | 0.97 s / 1.74 s | 37% / 50% / 13% | 87% |
 
 **Sharing is what makes the pool pay off.** With a split pool, Mooncake Store serves only **9%** of prompt tokens and total reuse is **47%**. The gate and router spread a session's turns over six prefill instances on four servers, so the next turn usually lands on a server whose memory does not hold that session's history. With the shared pool, the Store serves **50%** and total reuse rises to **87%**. Prefill computes 13% of prompt tokens instead of 53%, and time to first token falls from 3.2 s to **1.0 s** at the median and from 10.1 s to **1.7 s** at p90.
 <!-- neurospark-section:end -->
