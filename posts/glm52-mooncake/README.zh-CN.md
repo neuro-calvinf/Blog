@@ -115,11 +115,11 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 
 ### 生产负载下的分池与混池
 
-<center><img src="./images/glm53-1rps-split-vs-shared.zh.png" alt="每秒 1.0、0.8、0.6 个请求时分池与混池的首 token 时延和 prompt token 来源" style="width:100%; max-width:1100px"/></center>
+<center><img src="./images/glm53-1rps-split-vs-shared.zh.png" alt="每秒 0.6、0.8、1.0 个请求时分池与混池的首 token 时延和 prompt token 来源" style="width:100%; max-width:1100px"/></center>
 
-<center><p>图 7：每秒 1.0、0.8 和 0.6 个请求时，分池与混池的首 token 时延（p90，标注 p50）和每个 prompt token 的来源（热轮次）。</p></center>
+<center><p>图 7：每秒 0.6、0.8 和 1.0 个请求时，分池与混池的首 token 时延（p90，标注 p50）和每个 prompt token 的来源（热轮次）。</p></center>
 
-我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 1.0、0.8 和 0.6 个请求回放由生产流量重建的编程 Agent 会话，每组 20 分钟，请求按生产方式设置（输出最多 32K token，开启推理）。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。每条回放 lane 从会话中途开始，所以第一轮在两组里都是冷 Prefill；统计只覆盖之后的轮次。
+我们的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 0.6、0.8 和 1.0 个请求回放由生产流量重建的编程 Agent 会话，每组 20 分钟，请求按生产方式设置（输出最多 32K token，开启推理）。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。每条回放 lane 从会话中途开始，所以第一轮在两组里都是冷 Prefill；统计只覆盖之后的轮次。
 
 **共享才是 KV 池真正起作用的原因。** 混池时，各负载下 Mooncake Store 都提供 **58%** 的 prompt token，KV cache 复用率 **95%–96%**：Prefill 只需实际计算 4%–5% 的 prompt token，首 token 时延的中位数约 1.0 秒，p90 为 1.7–1.8 秒。分池时，Store 只提供约 11%，复用率降到约 51%：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。于是 Prefill 要实际计算约一半的 prompt，首 token 时延的 p90 升到 7–10 秒。 _[0.8 RPS 分池：待补。]_
 
@@ -205,7 +205,7 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 | Mooncake Store | 按 rail 分池（4 个 Master；占用 90% 时按 LRU 淘汰，每次 5%）；每台服务器 8 个 96 GiB 的 Store 服务，清缓存和内存整理后用透明大页；每个 Store 服务放在下一条 rail 的网卡上。混池：所有 Prefill 实例使用同样 4 个 Master。分池（图 7）：每台服务器运行自己的 4 个 Master，只供本机 Prefill 使用 |
 | 路由、网关 | 每组一个路由（感知 Decode，Prefill 之间用 `power_of_two`）；一个 KV 准入网关：每个 Decode 实例 1,000 万 token × 0.9，输入最多 917,504、输出最多 131,072 token，准入等待 30 秒（回放）或 900 秒（AgentX，其 warm-up 会同时启动所有会话） |
 | AgentX 设置 | `agentx profile`，并发 56 / 72 / 96 / 112，每个负载 900 秒，每条 lane 3 个 warm-up 请求，`ignore_eos` 加 trace 记录的输出长度，关闭推理，`--max-context-length 917504` |
-| 回放设置 | 160 条 lane，泊松到达 1.0 / 0.8 / 0.6 RPS，每组 20 分钟，`max_tokens` 32,000，开启推理，seed 7 |
+| 回放设置 | 160 条 lane，泊松到达 0.6 / 0.8 / 1.0 RPS，每组 20 分钟，`max_tokens` 32,000，开启推理，seed 7 |
 | 网络 | 所有优先级 PFC 关闭，ECN/CNP 计数为 0，网卡未配置拥塞控制（有损 RoCE） |
 | 启动文件 | HW_Optimization 的 recipe `disagg_mxfp4_atom_mooncake`（commit `91a8f996`），加两处实验改动（`start.sh` 中的 Prefill 流水线并行与 Store 环境变量透传、网关接受 `ignore_eos`）以及我们的启动脚本；可按需提供 |
 <!-- neurospark-appendix:end -->
