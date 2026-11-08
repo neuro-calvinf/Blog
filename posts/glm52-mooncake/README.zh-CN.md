@@ -109,7 +109,7 @@ ATOM 的做法是先在 Prefill GPU 上把发往每张 Decode GPU 的 KV 聚合�
 
 NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验：一组用回放的生产流量比较分池和混池，另一组是和上文相同的 AgentX 测试，Prefill 和 Decode 的并行方式也与上文相同。
 
-**部署形态。** 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。AgentX 测试中，每个 Prefill 实例与单机部署一样用 PP4，Store 里每个 token 只存一份。生产流量的对比运行在我们已上线的 recipe 上，其 Prefill 实例用 TP4。
+**部署形态。** 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。AgentX 测试中，每个 Prefill 实例与单机部署一样用 PP4，Store 里每个 token 只存一份。生产流量的对比运行在我们已上线的 recipe 上，其 Prefill 实例用 TP4：在生产负载下 TP4 Prefill 不是瓶颈，且分池、混池两组都用 TP4，对比只反映池化本身的差别。
 
 **KV 池。** 每块网卡也承担引擎的流量，所以 Store 与引擎共用网卡。我们按 RoCE rail 分池（4 个 Mooncake Master），每个 Prefill 实例的同号 rank 读写同一个池。包括 Decode 所在的服务器在内，每台服务器提供 8 个 96 GiB 的 Store 服务：每台 768 GiB，合计约 3 TiB。只有 Prefill 实例读写这个池。
 
@@ -172,8 +172,9 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 | 服务器 | 4 台，每台 8 张 AMD Instinct MI350X（gfx950，288 GB HBM3E），VBIOS 00165723 |
 | CPU、内存 | 2 颗 AMD EPYC 9755（2 个 NUMA 节点），1,511 GiB |
 | 操作系统、内核 | Ubuntu 22.04.5 LTS，6.8.0-138-generic；`iommu=pt`，`numa_balancing=0`，THP 为 `madvise`，未预留大页 |
-| GPU 驱动 | amdgpu 6.16.13 |
-| RDMA 网卡 | 8 块 Broadcom BCM957608（400 Gb/s RoCE v2，MTU 9000），每张 GPU 一块；固件 237.1.148.0（其中一台为 230.2.49.0）；bnxt_en / bnxt_re 237.1.137.0 |
+| GPU 驱动、固件 | amdgpu 6.16.13；GPU 固件 CP_MEC 41、RLC 43、SDMA 12、VCN 09.10.B0.09（在一张 GPU 上读取） |
+| 主机工具 | AMD SMI 26.5.0，主机 ROCm 7.14.0（其中一台 7.14.1；容器内不使用），Docker 29.8.0（其中一台 29.1.3） |
+| RDMA 网卡 | 8 块 Broadcom BCM957608-P1400GDF00（400 Gb/s RoCE v2，MTU 9000），每张 GPU 一块；固件 237.1.148.0（其中一台为 230.2.49.0）；bnxt_en / bnxt_re 237.1.137.0 |
 | 拓扑 | 每张 GPU 使用最近的网卡；slot 0 的 GPU 0–3 与 slot 1 的 GPU 5、4、7、6 对应同样四条 rail，所以每个引擎的 rank *i* 在同一条 rail 上。交换机型号、固件和交换机侧设置：未记录 |
 
 **软件**
@@ -182,9 +183,11 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 |---|---|
 | 容器镜像 | `rocm/atom-dev:nightly_202610231448-rocm10.0`，`sha256:082403b0dab5ef607d826f431ab636d2c146114d105b5e83b3961a3eadfcfb75`（所有引擎、Store、路由、网关和压测客户端） |
 | ATOM | commit `573e9c7de8e3462f24cdc6242970263493e3612b`（0.1.9.dev16） |
-| Mooncake Store / Transfer Engine | 0.3.13（git `78566d45`） |
-| AITER | 0.1.27.dev117，commit `1e2d557d7877f880e7daf3ac8d5cc45f918f6d9e` |
-| ROCm、PyTorch、Triton | ROCm 10.0.0（镜像内），PyTorch 2.11.0+rocm10.0.0，Triton 3.8.0 |
+| Mooncake Store / Transfer Engine | 0.3.13（git `78566d45`），Master、Store 服务二进制和 Python wheel 来自同一构建 |
+| AITER | 0.1.27.dev117（`amd-aiter 0.1.27.dev117+g1e2d557d7`），commit `1e2d557d7877f880e7daf3ac8d5cc45f918f6d9e` |
+| ROCm、HIP | ROCm 10.0.0（镜像内），HIP 7.15.26333 |
+| PyTorch、Triton | PyTorch 2.11.0+rocm10.0.0（git `c9ab2693`），Triton 3.8.0（git `4cff872c`） |
+| Python、Transformers | Python 3.12.3，Transformers 5.16.1 |
 | 路由 | atomesh 0.2.0 |
 | 模型 | `amd/GLM-5.3-Quark-MXFP4-AttnFP8`，revision `4992911b6f4e4d20947573ac7e04ff7d18b32288`（78 层） |
 | 测试工具 | AgentX harness 1.0.7，数据集 `semianalysisai/cc-traces-weka-062126` revision `23f152f6f0f9399a85901b89a6458def0ef16729`。未直接使用 InferenceX |

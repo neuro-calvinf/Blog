@@ -109,7 +109,7 @@ We ran InferenceX AgentX against this deployment for an hour at each load, from 
 
 NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments: a split pool against a shared pool on replayed production traffic, and the same AgentX sweep as above, with the same prefill and decode parallelism.
 
-**The deployment.** The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. For the AgentX sweep, each prefill instance runs PP4, as in the single-server setup, so the Store keeps one copy of every token. The production-traffic comparison ran on our deployed recipe, whose prefill instances run TP4.
+**The deployment.** The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. For the AgentX sweep, each prefill instance runs PP4, as in the single-server setup, so the Store keeps one copy of every token. The production-traffic comparison ran on our deployed recipe, whose prefill instances run TP4: at production load, TP4 prefill is not the bottleneck, and both pool arms use it, so the comparison isolates pooling.
 
 **The pool.** Every NIC also carries engine traffic, so the Store shares them. We run one pool per RoCE rail (four Mooncake Masters), so the same rank of every prefill instance reads and writes the same pool. Each server, decode servers included, contributes eight 96 GiB Store services: 768 GiB per server, about 3 TiB in all. Only prefill instances read and write it.
 
@@ -172,8 +172,9 @@ This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark sectio
 | Servers | 4, each 8× AMD Instinct MI350X (gfx950, 288 GB HBM3E), VBIOS 00165723 |
 | CPU, memory | 2× AMD EPYC 9755 (2 NUMA nodes), 1,511 GiB |
 | OS, kernel | Ubuntu 22.04.5 LTS, 6.8.0-138-generic; `iommu=pt`, `numa_balancing=0`, THP `madvise`, no reserved huge pages |
-| GPU driver | amdgpu 6.16.13 |
-| RDMA NICs | 8× Broadcom BCM957608 (400 Gb/s RoCE v2, MTU 9000), one per GPU; firmware 237.1.148.0 (one server: 230.2.49.0); bnxt_en / bnxt_re 237.1.137.0 |
+| GPU driver, firmware | amdgpu 6.16.13; GPU firmware CP_MEC 41, RLC 43, SDMA 12, VCN 09.10.B0.09 (read on one GPU) |
+| Host tools | AMD SMI 26.5.0 with host ROCm 7.14.0 (one server 7.14.1; not used inside containers), Docker 29.8.0 (one server 29.1.3) |
+| RDMA NICs | 8× Broadcom BCM957608-P1400GDF00 (400 Gb/s RoCE v2, MTU 9000), one per GPU; firmware 237.1.148.0 (one server: 230.2.49.0); bnxt_en / bnxt_re 237.1.137.0 |
 | Topology | GPU *i* uses its nearest NIC; slot-0 GPUs 0–3 and slot-1 GPUs 5,4,7,6 map to the same four rails, so rank *i* of every engine is on the same rail. Switch model, firmware and switch-side settings: not recorded |
 
 **Software**
@@ -182,9 +183,11 @@ This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark sectio
 |---|---|
 | Container image | `rocm/atom-dev:nightly_202610231448-rocm10.0`, `sha256:082403b0dab5ef607d826f431ab636d2c146114d105b5e83b3961a3eadfcfb75` (all engines, Store, router, gate and load clients) |
 | ATOM | commit `573e9c7de8e3462f24cdc6242970263493e3612b` (0.1.9.dev16) |
-| Mooncake Store / Transfer Engine | 0.3.13 (git `78566d45`) |
-| AITER | 0.1.27.dev117, commit `1e2d557d7877f880e7daf3ac8d5cc45f918f6d9e` |
-| ROCm, PyTorch, Triton | ROCm 10.0.0 (in image), PyTorch 2.11.0+rocm10.0.0, Triton 3.8.0 |
+| Mooncake Store / Transfer Engine | 0.3.13 (git `78566d45`), Master and Store service binaries and Python wheel from the same build |
+| AITER | 0.1.27.dev117 (`amd-aiter 0.1.27.dev117+g1e2d557d7`), commit `1e2d557d7877f880e7daf3ac8d5cc45f918f6d9e` |
+| ROCm, HIP | ROCm 10.0.0 (in image), HIP 7.15.26333 |
+| PyTorch, Triton | PyTorch 2.11.0+rocm10.0.0 (git `c9ab2693`), Triton 3.8.0 (git `4cff872c`) |
+| Python, Transformers | Python 3.12.3, Transformers 5.16.1 |
 | Router | atomesh 0.2.0 |
 | Model | `amd/GLM-5.3-Quark-MXFP4-AttnFP8`, revision `4992911b6f4e4d20947573ac7e04ff7d18b32288` (78 layers) |
 | Benchmark | AgentX harness 1.0.7, dataset `semianalysisai/cc-traces-weka-062126` revision `23f152f6f0f9399a85901b89a6458def0ef16729`. InferenceX: not used directly |
