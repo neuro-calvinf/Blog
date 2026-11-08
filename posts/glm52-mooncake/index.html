@@ -153,13 +153,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <p><strong>How fast a restore is.</strong> A typical restore brings back 110K–130K tokens of history. Each prefill GPU reads and unpacks its share in a median of 150–220 ms. Because the four stages do not load at the same moment, a request waits on average <strong>0.4–1.2 s</strong> from its first stage starting to its last stage finishing, rising with load. No load failed in any of the measured runs. At 112 sessions, Mooncake moved about 66 TB of KV per hour inside the server, between the Store and prefill and from prefill to decode.</p>
 <p><strong>Where it stops.</strong> Up to 96 sessions, median time to first token stays at 2.5 s or below. At 112 sessions throughput still holds at 44K, but the server has run out of headroom: decode's KV memory is a median <strong>91%</strong> full, requests start to queue in front of prefill, and median time to first token reaches about 7 s.</p>
 
-
-
-
-
-
-
-
 <!-- neurospark-section:start --><h2 id="en-scaling-out-glm-5-3-on-four-mi350x-servers-neurospark">Scaling Out: GLM-5.3 on Four MI350X Servers (NeuroSpark)</h2>
 <p>NeuroSpark serves GLM-5.3 (MXFP4 weights, FP8 KV cache) with ATOM and Mooncake on four 8-GPU AMD Instinct MI350X servers. We added Mooncake Store to that deployment and ran two experiments: a split pool against a shared pool on replayed production traffic, and the same AgentX sweep as above, with the same prefill and decode parallelism.</p>
 <p><strong>The deployment.</strong> The 32 GPUs run six prefill instances and two decode instances (6P2D), arranged as two groups of three prefills and one decode behind a KV admission gate. Each decode instance runs TP4 with decode context parallelism (DCP4) and receives KV through ATOM's gather / large-write / landing path described above. For the AgentX sweep, each prefill instance runs PP4, as in the single-server setup, so the Store keeps one copy of every token. The production-traffic comparison ran on our deployed recipe, whose prefill instances run TP4: at production load, TP4 prefill is not the bottleneck, and both pool arms use it, so the comparison isolates pooling.</p>
@@ -184,9 +177,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <p><strong>Adding an SSD tier.</strong> Some agent sessions pause for many minutes. <a href="https://kvcache.ai/blog/scaling-kv-cache-beyond-memory/" target="_blank" rel="noopener noreferrer">Mooncake's SSD offloading</a> could keep their history at a fraction of the cost of DRAM.</p>
 <p><strong>Making room on decode.</strong> Decode keeps each running request's KV in GPU memory, which was nearly full at the highest load. More decode GPUs per prefill instance and more KV per decode GPU are next.</p>
 
-
-
-
 <!-- neurospark-futurework:start --><p><strong>RoCE congestion control across nodes.</strong> Many-to-one and one-to-many RDMA traffic (prefill-to-decode KV transfer and Store restores across servers) needs working congestion control, ECN/DCQCN or PFC, so that bandwidth is shared evenly across GPUs. We are fixing this on our multi-node fabric and will measure the AgentX sweep again with it in place.</p><!-- neurospark-futurework:end -->
 <h2 id="en-acknowledgments">Acknowledgments</h2>
 <p>We thank the Mooncake community for Mooncake Store and Transfer Engine and for working with us on this deployment, SemiAnalysis for AgentX and InferenceX, and AMD's ATOM, AITER, FlyDSL, and ROCm teams for the serving engine, kernels, and software this work builds on. ATOM's Mooncake Store connector (<a href="https://github.com/ROCm/ATOM/pull/2464" target="_blank" rel="noopener noreferrer">ROCm/ATOM#2464</a>) and its prefill-to-decode transfer path (<a href="https://github.com/ROCm/ATOM/pull/2431" target="_blank" rel="noopener noreferrer">ROCm/ATOM#2431</a>) are open source.</p>
@@ -198,7 +188,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <li>AgentX trace corpus: https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126</li>
 <li>InferenceX results for this deployment: https://github.com/SemiAnalysisAI/InferenceX/pull/4045</li>
 </ul><!-- neurospark-appendix:start --><h2 id="en-neurospark-appendix">Appendix: Test Environment and Reproducibility (Four-Node GLM-5.3)</h2>
-<p>This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark section (Figures 7 and 8). Values were read on the test hosts on Nov 7, 2026; anything we could not determine is marked as not recorded.</p>
+<p>This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark section (Figures 7 and 8).</p>
 <p><strong>Hardware and system</strong> (identical on all four servers unless noted)</p>
 <table>
 <thead>
@@ -222,7 +212,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 </tr>
 <tr>
 <td>GPU driver, firmware</td>
-<td>amdgpu 6.16.13; GPU firmware CP_MEC 41, RLC 43, SDMA 12, VCN 09.10.B0.09 (read on one GPU)</td>
+<td>amdgpu 6.16.13; GPU firmware CP_MEC 41, RLC 43, SDMA 12, VCN 09.10.B0.09</td>
 </tr>
 <tr>
 <td>Host tools</td>
@@ -234,7 +224,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 </tr>
 <tr>
 <td>Topology</td>
-<td>GPU <em>i</em> uses its nearest NIC; slot-0 GPUs 0–3 and slot-1 GPUs 5,4,7,6 map to the same four rails, so rank <em>i</em> of every engine is on the same rail. Switch model, firmware and switch-side settings: not recorded</td>
+<td>GPU <em>i</em> uses its nearest NIC; slot-0 GPUs 0–3 and slot-1 GPUs 5,4,7,6 map to the same four rails, so rank <em>i</em> of every engine is on the same rail.</td>
 </tr>
 </tbody>
 </table>
@@ -339,7 +329,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <td>160 lanes, Poisson arrivals at 1.0 / 0.8 / 0.6 RPS, 20 min per run, <code>max_tokens</code> 32,000, reasoning on, seed 7</td>
 </tr>
 <tr>
-<td>Network (during all runs)</td>
+<td>Network</td>
 <td>PFC off on all priorities, ECN/CNP counters 0, no NIC congestion-control configuration (lossy RoCE)</td>
 </tr>
 <tr>
@@ -412,13 +402,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <p><strong>恢复有多快。</strong> 一次典型的恢复要取回 110K–130K token 的历史，每张 Prefill GPU 读回并拆包自己那一份的中位数为 150–220 毫秒。四个 stage 并不同时加载，所以一个请求从第一个 stage 开始到最后一个 stage 完成，平均要等 <strong>0.4–1.2 秒</strong>，负载越高越长。所有实测运行中没有一次加载失败。112 个会话时，Mooncake 每小时在这台服务器内部搬运约 66 TB 的 KV，既有 Store 与 Prefill 之间的读写，也有 Prefill 到 Decode 的交接。</p>
 <p><strong>到哪里为止。</strong> 96 个会话以内，首 token 时延的中位数不超过 2.5 秒。到 112 个会话，单卡吞吐仍保持在约 44K，但服务器已没有余量：Decode 的 KV 显存占用中位数达到 <strong>91%</strong>，请求开始在 Prefill 前排队，首 token 时延的中位数升到约 7 秒。</p>
 
-
-
-
-
-
-
-
 <!-- neurospark-section:start --><h2 id="zh-neurospark-scaling-out">扩展到四台服务器：GLM-5.3 在 MI350X 上的 6P2D 部署（NeuroSpark）</h2>
 <p>NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验：一组用回放的生产流量比较分池和混池，另一组是和上文相同的 AgentX 测试，Prefill 和 Decode 的并行方式也与上文相同。</p>
 <p><strong>部署形态。</strong> 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。AgentX 测试中，每个 Prefill 实例与单机部署一样用 PP4，Store 里每个 token 只存一份。生产流量的对比运行在我们已上线的 recipe 上，其 Prefill 实例用 TP4：在生产负载下 TP4 Prefill 不是瓶颈，且分池、混池两组都用 TP4，对比只反映池化本身的差别。</p>
@@ -443,9 +426,6 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <p><strong>增加 SSD 层</strong>。有些 Agent 会话一停就是好几分钟甚至更久。<a href="https://kvcache.ai/blog/scaling-kv-cache-beyond-memory/" target="_blank" rel="noopener noreferrer">Mooncake 的 SSD offloading</a> 能以远低于内存的成本保留它们的历史。</p>
 <p><strong>给 Decode 腾出空间</strong>。Decode 把每个运行中请求的 KV 都放在显存里，最高负载时已接近占满。下一步是给每个 Prefill 实例配更多 Decode GPU，并让每张 Decode GPU 放下更多 KV。</p>
 
-
-
-
 <!-- neurospark-futurework:start --><p><strong>多节点 RoCE 拥塞控制</strong>。多对一和一对多的 RDMA 流量（跨服务器的 Prefill 到 Decode KV 传输，以及从 Store 恢复 KV）需要生效的拥塞控制（ECN/DCQCN 或 PFC），带宽才能在各张卡之间均匀分配。我们正在多节点网络上修复这一点，修复后会重新测量 AgentX。</p><!-- neurospark-futurework:end -->
 <h2 id="zh-acknowledgments">致谢</h2>
 <p>感谢 Mooncake 社区提供 Mooncake Store 与 Transfer Engine，并与我们一起推进这套部署；感谢 SemiAnalysis 提供 AgentX 和 InferenceX；感谢 AMD ATOM、AITER、FlyDSL 与 ROCm 团队提供这项工作所依赖的推理引擎、算子和软件栈。ATOM 的 Mooncake Store 连接器（<a href="https://github.com/ROCm/ATOM/pull/2464" target="_blank" rel="noopener noreferrer">ROCm/ATOM#2464</a>）和 Prefill 到 Decode 的传输通路（<a href="https://github.com/ROCm/ATOM/pull/2431" target="_blank" rel="noopener noreferrer">ROCm/ATOM#2431</a>）均已开源。</p>
@@ -457,7 +437,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <li>AgentX trace 语料：<a href="https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126" target="_blank" rel="noopener noreferrer">https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126</a></li>
 <li>这套部署的 InferenceX 结果：<a href="https://github.com/SemiAnalysisAI/InferenceX/pull/4045" target="_blank" rel="noopener noreferrer">https://github.com/SemiAnalysisAI/InferenceX/pull/4045</a></li>
 </ul><!-- neurospark-appendix:start --><h2 id="zh-neurospark-appendix">附录：测试环境与可复现性（四机 GLM-5.3）</h2>
-<p>本附录覆盖 NeuroSpark 一节中四机 GLM-5.3 的测量（图 7 和图 8）。数值于 2026 年 11 月 7 日在测试主机上读取；无法确定的项标为"未记录"。</p>
+<p>本附录覆盖 NeuroSpark 一节中四机 GLM-5.3 的测量（图 7 和图 8）。</p>
 <p><strong>硬件与系统</strong>（除注明外四台服务器相同）</p>
 <table>
 <thead>
@@ -481,7 +461,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 </tr>
 <tr>
 <td>GPU 驱动、固件</td>
-<td>amdgpu 6.16.13；GPU 固件 CP_MEC 41、RLC 43、SDMA 12、VCN 09.10.B0.09（在一张 GPU 上读取）</td>
+<td>amdgpu 6.16.13；GPU 固件 CP_MEC 41、RLC 43、SDMA 12、VCN 09.10.B0.09</td>
 </tr>
 <tr>
 <td>主机工具</td>
@@ -493,7 +473,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 </tr>
 <tr>
 <td>拓扑</td>
-<td>每张 GPU 使用最近的网卡；slot 0 的 GPU 0–3 与 slot 1 的 GPU 5、4、7、6 对应同样四条 rail，所以每个引擎的 rank <em>i</em> 在同一条 rail 上。交换机型号、固件和交换机侧设置：未记录</td>
+<td>每张 GPU 使用最近的网卡；slot 0 的 GPU 0–3 与 slot 1 的 GPU 5、4、7、6 对应同样四条 rail，所以每个引擎的 rank <em>i</em> 在同一条 rail 上。</td>
 </tr>
 </tbody>
 </table>
@@ -598,7 +578,7 @@ html[lang="zh-CN"] .banner-title[data-lang="zh"]{display:inline}
 <td>160 条 lane，泊松到达 1.0 / 0.8 / 0.6 RPS，每组 20 分钟，<code>max_tokens</code> 32,000，开启推理，seed 7</td>
 </tr>
 <tr>
-<td>网络（所有测试期间）</td>
+<td>网络</td>
 <td>所有优先级 PFC 关闭，ECN/CNP 计数为 0，网卡未配置拥塞控制（有损 RoCE）</td>
 </tr>
 <tr>

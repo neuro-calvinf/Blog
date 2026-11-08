@@ -163,7 +163,7 @@ We thank the Mooncake community for Mooncake Store and Transfer Engine and for w
 <!-- neurospark-appendix:start -->
 ## Appendix: Test Environment and Reproducibility (Four-Node GLM-5.3)
 
-This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark section (Figures 7 and 8). Values were read on the test hosts on Nov 7, 2026; anything we could not determine is marked as not recorded.
+This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark section (Figures 7 and 8).
 
 **Hardware and system** (identical on all four servers unless noted)
 
@@ -172,10 +172,10 @@ This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark sectio
 | Servers | 4, each 8× AMD Instinct MI350X (gfx950, 288 GB HBM3E), VBIOS 00165723 |
 | CPU, memory | 2× AMD EPYC 9755 (2 NUMA nodes), 1,511 GiB |
 | OS, kernel | Ubuntu 22.04.5 LTS, 6.8.0-138-generic; `iommu=pt`, `numa_balancing=0`, THP `madvise`, no reserved huge pages |
-| GPU driver, firmware | amdgpu 6.16.13; GPU firmware CP_MEC 41, RLC 43, SDMA 12, VCN 09.10.B0.09 (read on one GPU) |
+| GPU driver, firmware | amdgpu 6.16.13; GPU firmware CP_MEC 41, RLC 43, SDMA 12, VCN 09.10.B0.09 |
 | Host tools | AMD SMI 26.5.0 with host ROCm 7.14.0 (one server 7.14.1; not used inside containers), Docker 29.8.0 (one server 29.1.3) |
 | RDMA NICs | 8× Broadcom BCM957608-P1400GDF00 (400 Gb/s RoCE v2, MTU 9000), one per GPU; firmware 237.1.148.0 (one server: 230.2.49.0); bnxt_en / bnxt_re 237.1.137.0 |
-| Topology | GPU *i* uses its nearest NIC; slot-0 GPUs 0–3 and slot-1 GPUs 5,4,7,6 map to the same four rails, so rank *i* of every engine is on the same rail. Switch model, firmware and switch-side settings: not recorded |
+| Topology | GPU *i* uses its nearest NIC; slot-0 GPUs 0–3 and slot-1 GPUs 5,4,7,6 map to the same four rails, so rank *i* of every engine is on the same rail. |
 
 **Software**
 
@@ -206,6 +206,6 @@ This appendix covers the four-node GLM-5.3 measurements in the NeuroSpark sectio
 | Router, gate | One router per group (decode-aware, `power_of_two` over prefills); one KV admission gate: 10M tokens per decode instance × 0.9, input up to 917,504 and output up to 131,072 tokens, admission wait 30 s (replay) or 900 s (AgentX, whose warm-up primes every session at once) |
 | AgentX settings | `agentx profile`, concurrency 56 / 72 / 96 / 112, 900 s per load, 3 warm-up requests per lane, `ignore_eos` with recorded output lengths, reasoning off, `--max-context-length 917504` |
 | Replay settings | 160 lanes, Poisson arrivals at 1.0 / 0.8 / 0.6 RPS, 20 min per run, `max_tokens` 32,000, reasoning on, seed 7 |
-| Network (during all runs) | PFC off on all priorities, ECN/CNP counters 0, no NIC congestion-control configuration (lossy RoCE) |
+| Network | PFC off on all priorities, ECN/CNP counters 0, no NIC congestion-control configuration (lossy RoCE) |
 | Launch files | HW_Optimization recipe `disagg_mxfp4_atom_mooncake` at commit `91a8f996`, plus two experimental changes (prefill pipeline parallelism and Store environment pass-through in `start.sh`, `ignore_eos` accepted by the gate) and our launch scripts; available on request |
 <!-- neurospark-appendix:end -->

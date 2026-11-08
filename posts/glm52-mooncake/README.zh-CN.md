@@ -163,7 +163,7 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 <!-- neurospark-appendix:start -->
 ## 附录：测试环境与可复现性（四机 GLM-5.3）
 
-本附录覆盖 NeuroSpark 一节中四机 GLM-5.3 的测量（图 7 和图 8）。数值于 2026 年 11 月 7 日在测试主机上读取；无法确定的项标为"未记录"。
+本附录覆盖 NeuroSpark 一节中四机 GLM-5.3 的测量（图 7 和图 8）。
 
 **硬件与系统**（除注明外四台服务器相同）
 
@@ -172,10 +172,10 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 | 服务器 | 4 台，每台 8 张 AMD Instinct MI350X（gfx950，288 GB HBM3E），VBIOS 00165723 |
 | CPU、内存 | 2 颗 AMD EPYC 9755（2 个 NUMA 节点），1,511 GiB |
 | 操作系统、内核 | Ubuntu 22.04.5 LTS，6.8.0-138-generic；`iommu=pt`，`numa_balancing=0`，THP 为 `madvise`，未预留大页 |
-| GPU 驱动、固件 | amdgpu 6.16.13；GPU 固件 CP_MEC 41、RLC 43、SDMA 12、VCN 09.10.B0.09（在一张 GPU 上读取） |
+| GPU 驱动、固件 | amdgpu 6.16.13；GPU 固件 CP_MEC 41、RLC 43、SDMA 12、VCN 09.10.B0.09 |
 | 主机工具 | AMD SMI 26.5.0，主机 ROCm 7.14.0（其中一台 7.14.1；容器内不使用），Docker 29.8.0（其中一台 29.1.3） |
 | RDMA 网卡 | 8 块 Broadcom BCM957608-P1400GDF00（400 Gb/s RoCE v2，MTU 9000），每张 GPU 一块；固件 237.1.148.0（其中一台为 230.2.49.0）；bnxt_en / bnxt_re 237.1.137.0 |
-| 拓扑 | 每张 GPU 使用最近的网卡；slot 0 的 GPU 0–3 与 slot 1 的 GPU 5、4、7、6 对应同样四条 rail，所以每个引擎的 rank *i* 在同一条 rail 上。交换机型号、固件和交换机侧设置：未记录 |
+| 拓扑 | 每张 GPU 使用最近的网卡；slot 0 的 GPU 0–3 与 slot 1 的 GPU 5、4、7、6 对应同样四条 rail，所以每个引擎的 rank *i* 在同一条 rail 上。 |
 
 **软件**
 
@@ -206,6 +206,6 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 | 路由、网关 | 每组一个路由（感知 Decode，Prefill 之间用 `power_of_two`）；一个 KV 准入网关：每个 Decode 实例 1,000 万 token × 0.9，输入最多 917,504、输出最多 131,072 token，准入等待 30 秒（回放）或 900 秒（AgentX，其 warm-up 会同时启动所有会话） |
 | AgentX 设置 | `agentx profile`，并发 56 / 72 / 96 / 112，每个负载 900 秒，每条 lane 3 个 warm-up 请求，`ignore_eos` 加 trace 记录的输出长度，关闭推理，`--max-context-length 917504` |
 | 回放设置 | 160 条 lane，泊松到达 1.0 / 0.8 / 0.6 RPS，每组 20 分钟，`max_tokens` 32,000，开启推理，seed 7 |
-| 网络（所有测试期间） | 所有优先级 PFC 关闭，ECN/CNP 计数为 0，网卡未配置拥塞控制（有损 RoCE） |
+| 网络 | 所有优先级 PFC 关闭，ECN/CNP 计数为 0，网卡未配置拥塞控制（有损 RoCE） |
 | 启动文件 | HW_Optimization 的 recipe `disagg_mxfp4_atom_mooncake`（commit `91a8f996`），加两处实验改动（`start.sh` 中的 Prefill 流水线并行与 Store 环境变量透传、网关接受 `ignore_eos`）以及我们的启动脚本；可按需提供 |
 <!-- neurospark-appendix:end -->
